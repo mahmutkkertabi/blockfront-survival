@@ -28,13 +28,24 @@ const sun = new THREE.DirectionalLight(0xfff2cf,2.3); sun.position.set(-12,22,9)
 const DAY_SKY = new THREE.Color(0x8fc8e8), NIGHT_SKY = new THREE.Color(0x111d39);
 const DAY_FOG = new THREE.Color(0x8fc8e8), NIGHT_FOG = new THREE.Color(0x111d39);
 const DAY_LENGTH = 90; // One game day lasts 90 seconds.
-const NIGHT_START = 65, DAWN_START = 80;
+const NIGHT_START = 56, DAWN_START = 78;
 let worldTime = 0, currentDay = 1, isNight = false, daySyncTick = 0;
-const mission = { crystals: 0, blocksPlaced: 0, enemiesDefeated: 0, won: false };
-const GOAL_DAY = 5, GOAL_CRYSTALS = 5, GOAL_BLOCKS = 10, GOAL_ENEMIES = 8;
-const enemies = [], enemyMeshes = [];
-const enemyRaycaster = new THREE.Raycaster();
-let enemySerial = 0, nightSpawnTimer = 0, enemiesThisNight = 0;
+const MAX_PLAYERS = 5;
+const remotePlayerHitMeshes = [];
+const mobHitMeshes = [];
+const mobs = new Map();
+const lastAttackAt = new Map();
+const lastMobHitAt = new Map();
+let mobCounter = 0, mobSpawnTimer = 0, mobSnapshotTimer = 0, mobTypeIndex = 0;
+const MOB_TYPES = ['zombie','skeleton','creeper','spider','enderman'];
+const MOB_DEFS = {
+ zombie:{health:70,speed:1.45,damage:8,color:0x4eaa54,height:1.9},
+ skeleton:{health:48,speed:1.15,damage:7,color:0xd7d9c9,height:1.95},
+ creeper:{health:55,speed:1.25,damage:28,color:0x4da74b,height:1.8},
+ spider:{health:40,speed:2.5,damage:6,color:0x252936,height:0.7},
+ enderman:{health:95,speed:2.0,damage:10,color:0x24202f,height:2.8}
+};
+let localSpawnX = 0;
 
 const materials = {
  grass:new THREE.MeshLambertMaterial({color:0x5da64d}),
@@ -196,116 +207,69 @@ const statusLabel=document.querySelector('#status');
 function setNetworkStatus(text){netStatus.textContent=text;}
 function updateRoomStatus(){
  const phase=isNight?'NIGHT':'DAYLIGHT';
- if(networkRole==='host') statusLabel.textContent=`DAY ${currentDay} · ${phase} · ROOM ${roomCode} · ${1+connections.size} PLAYER${connections.size===0?'':'S'}`;
- else if(networkRole==='client') statusLabel.textContent=`DAY ${currentDay} · ${phase} · ROOM ${roomCode} · ${hostConnection?.open?'2 PLAYERS':'CONNECTING'}`;
+ const count=networkRole==='host'?1+connections.size:(networkRole==='client'&&hostConnection?.open?1+remotePlayers.size:1);
+ if(networkRole==='host') statusLabel.textContent=`DAY ${currentDay} · ${phase} · PLAYERS ${count}/${MAX_PLAYERS} · ROOM ${roomCode}`;
+ else if(networkRole==='client') statusLabel.textContent=`DAY ${currentDay} · ${phase} · PLAYERS ${count}/${MAX_PLAYERS} · ROOM ${roomCode}`;
  else statusLabel.textContent=`DAY ${currentDay} · ${phase} · SOLO`;
 }
-function updateMissionUI(){
- const dayEl=document.querySelector('#objectiveDay');
- const crystalEl=document.querySelector('#objectiveCrystals');
- const buildEl=document.querySelector('#objectiveBlocks');
- const enemyEl=document.querySelector('#objectiveEnemies');
- if(dayEl)dayEl.textContent=`Reach Day ${GOAL_DAY}: ${Math.min(currentDay,GOAL_DAY)}/${GOAL_DAY}`;
- if(crystalEl)crystalEl.textContent=`Mine crystal ore: ${Math.min(mission.crystals,GOAL_CRYSTALS)}/${GOAL_CRYSTALS}`;
- if(buildEl)buildEl.textContent=`Place blocks: ${Math.min(mission.blocksPlaced,GOAL_BLOCKS)}/${GOAL_BLOCKS}`;
- if(enemyEl)enemyEl.textContent=`Defeat hostiles: ${Math.min(mission.enemiesDefeated,GOAL_ENEMIES)}/${GOAL_ENEMIES}`;
- if(!mission.won && currentDay>=GOAL_DAY && mission.crystals>=GOAL_CRYSTALS && mission.blocksPlaced>=GOAL_BLOCKS && mission.enemiesDefeated>=GOAL_ENEMIES){
-   mission.won=true;const banner=document.querySelector('#missionBanner');banner.hidden=false;say('SURVIVAL MISSION COMPLETE!');
- }
-}
-function addEnemyPart(enemy,geometry,material,position){
- const mesh=new THREE.Mesh(geometry,material);mesh.position.set(...position);mesh.castShadow=true;mesh.userData.enemy=enemy;enemy.group.add(mesh);enemyMeshes.push(mesh);return mesh;
-}
-function spawnEnemy(){
- if(enemies.length>=5||enemiesThisNight>=3)return;
- let x=0,z=0,tries=0;
- do{
-   const angle=Math.random()*Math.PI*2,dist=9+Math.random()*5;
-   x=Math.max(-21,Math.min(21,Math.round(player.pos.x+Math.cos(angle)*dist)));
-   z=Math.max(-21,Math.min(21,Math.round(player.pos.z+Math.sin(angle)*dist)));
-   tries++;
- }while(Math.hypot(x-player.pos.x,z-player.pos.z)<7&&tries<12);
- let h=heightAt(x,z);const group=new THREE.Group();
- if(blocks.has(key(x,h,z))||blocks.has(key(x,h+1,z))){
-   x=Math.max(-21,Math.min(21,Math.round(player.pos.x+(Math.random()<.5?-1:1)*(9+Math.random()*5))));
-   z=Math.max(-21,Math.min(21,Math.round(player.pos.z+(Math.random()<.5?-1:1)*(9+Math.random()*5))));
-   h=heightAt(x,z);
- }
- const bodyMat=new THREE.MeshLambertMaterial({color:0x4b3449}),headMat=new THREE.MeshLambertMaterial({color:0x6d425d}),eyeMat=new THREE.MeshBasicMaterial({color:0xff4c65});
- const enemy={id:++enemySerial,group,health:70,speed:1.35,attackTimer:0,materials:[bodyMat,headMat,eyeMat]};
- addEnemyPart(enemy,new THREE.BoxGeometry(.62,.90,.42),bodyMat,[0,.68,0]);
- addEnemyPart(enemy,new THREE.BoxGeometry(.50,.52,.48),headMat,[0,1.39,-.015]);
- for(const side of [-1,1]){
-   addEnemyPart(enemy,new THREE.BoxGeometry(.08,.07,.035),eyeMat,[side*.125,1.42,-.274]);
-   addEnemyPart(enemy,new THREE.BoxGeometry(.17,.64,.19),bodyMat,[side*.40,.67,0]);
-   addEnemyPart(enemy,new THREE.BoxGeometry(.20,.44,.22),headMat,[side*.17,.23,0]);
- }
- group.position.set(x,h-.5,z);scene.add(group);enemies.push(enemy);enemiesThisNight++;
- say('A hostile cube appeared!');
-}
-function removeEnemy(enemy,killed=false){
- if(!enemy)return;scene.remove(enemy.group);
- for(let i=enemyMeshes.length-1;i>=0;i--){if(enemyMeshes[i].userData.enemy===enemy)enemyMeshes.splice(i,1);}
- enemy.group.traverse(obj=>{if(obj.geometry)obj.geometry.dispose();});
- for(const material of enemy.materials)material.dispose();
- const idx=enemies.indexOf(enemy);if(idx>=0)enemies.splice(idx,1);
- if(killed){mission.enemiesDefeated++;updateMissionUI();say('Hostile defeated!');}
-}
-function targetEnemy(maxDistance=30){
- enemyRaycaster.far=maxDistance;enemyRaycaster.setFromCamera(new THREE.Vector2(0,0),camera);
- const hit=enemyRaycaster.intersectObjects(enemyMeshes,false)[0];
- return hit?.object?.userData?.enemy?{enemy:hit.object.userData.enemy,hit}:null;
-}
-function damageEnemy(enemy,amount){
- if(!enemy||!enemies.includes(enemy))return;
- enemy.health-=amount;
- if(enemy.health<=0)removeEnemy(enemy,true);
-}
-function updateEnemies(dt){
- if(paused||!locked)return;
- if(isNight){nightSpawnTimer+=dt;if(nightSpawnTimer>=4.5&&enemiesThisNight<3){nightSpawnTimer=0;spawnEnemy();}}
- for(const enemy of [...enemies]){
-   const dx=player.pos.x-enemy.group.position.x,dz=player.pos.z-enemy.group.position.z;
-   const distance=Math.hypot(dx,dz);
-   enemy.group.rotation.y=Math.atan2(-dx,-dz);
-   if(distance>1.35){
-     const step=enemy.speed*dt;
-     const nx=enemy.group.position.x+(dx/distance)*step,nz=enemy.group.position.z+(dz/distance)*step;
-     const gx=Math.round(nx),gz=Math.round(nz),gh=heightAt(gx,gz);
-     // Avoid walking into a tree or a player-built wall at head height.
-     if(!blocks.has(key(gx,gh,gz))&&!blocks.has(key(gx,gh+1,gz))){enemy.group.position.x=nx;enemy.group.position.z=nz;enemy.group.position.y=gh-.5;}
-   }else{
-     enemy.attackTimer+=dt;
-     if(enemy.attackTimer>=1.15){enemy.attackTimer=0;player.health=Math.max(0,player.health-8);updateStats();say('A hostile hit you!');
-       if(player.health<=0){player.health=100;player.hunger=Math.max(40,player.hunger);player.blocks=Math.max(5,player.blocks);player.pos.set(0,2.3,6);player.vel.set(0,0,0);updateStats();say('Respawned. Your mission progress remains.');}
-     }
-   }
- }
-}
 function updateDayCycle(){
- const wasNight=isNight;
- currentDay=Math.floor(worldTime/DAY_LENGTH)+1;
- const phase=worldTime%DAY_LENGTH;
- isNight=phase>=NIGHT_START&&phase<DAWN_START;
- if(!wasNight&&isNight){nightSpawnTimer=0;enemiesThisNight=0;say('Night falls! Hostile cubes are coming.');}
- if(wasNight&&!isNight){for(const enemy of [...enemies])removeEnemy(enemy,false);say('Dawn has arrived. The hostiles have retreated.');}
- let daylight=1;
- if(phase>=NIGHT_START&&phase<DAWN_START)daylight=.16;
- else if(phase>=NIGHT_START-10&&phase<NIGHT_START)daylight=1-((phase-(NIGHT_START-10))/10)*.84;
- else if(phase>=DAWN_START)daylight=.16+((phase-DAWN_START)/(DAY_LENGTH-DAWN_START))*.84;
- daylight=Math.max(.16,Math.min(1,daylight));
- const darkness=1-daylight;
+ const phaseTime=((worldTime%DAY_LENGTH)+DAY_LENGTH)%DAY_LENGTH;
+ const nextDay=Math.floor(worldTime/DAY_LENGTH)+1;
+ const nextNight=phaseTime>=NIGHT_START&&phaseTime<DAWN_START;
+ let darkness=nextNight?1:0;
+ if(phaseTime>=NIGHT_START&&phaseTime<NIGHT_START+7) darkness=(phaseTime-NIGHT_START)/7;
+ else if(phaseTime>=DAWN_START-7&&phaseTime<DAWN_START) darkness=(DAWN_START-phaseTime)/7;
+ darkness=Math.max(0,Math.min(1,darkness));
+ const changed=nextDay!==currentDay||nextNight!==isNight;
+ currentDay=nextDay;isNight=nextNight;
  scene.background.copy(DAY_SKY).lerp(NIGHT_SKY,darkness);
  scene.fog.color.copy(DAY_FOG).lerp(NIGHT_FOG,darkness);
- hemisphere.intensity=.4+1.7*daylight;
- sun.intensity=.12+2.18*daylight;
- updateRoomStatus();updateMissionUI();
+ hemisphere.intensity=2.1-1.1*darkness;
+ sun.intensity=2.3-1.85*darkness;
+ if(changed)updateRoomStatus();
 }
 function createRoomCode(){
  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
  // 32 symbols, 10 cryptographically random characters (50 bits of entropy).
  const bytes=crypto.getRandomValues(new Uint8Array(10));
  return Array.from(bytes,b=>chars[b & 31]).join('');
+}
+function localPlayerState(){
+ return {name:networkRole==='host'?'HOST':'PLAYER',pos:{x:player.pos.x,y:player.pos.y-1.6,z:player.pos.z},yaw:player.yaw,pitch:player.pitch,health:player.health,held:selected};
+}
+function applyLocalDamage(amount,source='friend'){
+ player.health=Math.max(0,player.health-amount);updateStats();
+ if(player.health<=0){
+   player.health=100;player.pos.set(localSpawnX,2.3,6);player.vel.set(0,0,0);camera.position.copy(player.pos);updateStats();
+   say(`Defeated by ${source}. Respawned!`);
+ }else say(`Hit by ${source}!`);
+}
+function handlePlayerAttack(attackerPeerId,targetPeerId,weaponIndex){
+ if(networkRole!=='host'||!peer||typeof targetPeerId!=='string'||attackerPeerId===targetPeerId||!Number.isInteger(weaponIndex)||weaponIndex<0||weaponIndex>=weapons.length)return;
+ if(targetPeerId!==peer.id&&!connections.has(targetPeerId))return;
+ if(attackerPeerId!==peer.id&&!connections.has(attackerPeerId))return;
+ const w=weapons[weaponIndex];
+ const damageByWeapon=[24,25,14,7,45,0];const rangeByWeapon=[3.5,30,30,30,3.7,0];
+ const damage=damageByWeapon[weaponIndex],range=rangeByWeapon[weaponIndex];if(!damage||!range)return;
+ const now=Date.now(),last=lastAttackAt.get(attackerPeerId)||0;
+ if(now-last<Math.max(55,(w.rate||250)*.75))return;
+ lastAttackAt.set(attackerPeerId,now);
+ const attacker=attackerPeerId===peer.id?localPlayerState():remotePlayers.get(attackerPeerId)?.state;
+ const target=targetPeerId===peer.id?localPlayerState():remotePlayers.get(targetPeerId)?.state;
+ if(!attacker?.pos||!target?.pos)return;
+ const origin=new THREE.Vector3(attacker.pos.x,attacker.pos.y+1.6,attacker.pos.z);
+ const center=new THREE.Vector3(target.pos.x,target.pos.y+1.0,target.pos.z);
+ const delta=center.clone().sub(origin);const distance=delta.length();if(distance>range||distance<.05)return;
+ const yaw=Number(attacker.yaw)||0,pitch=Number(attacker.pitch)||0;
+ const direction=new THREE.Vector3(-Math.sin(yaw)*Math.cos(pitch),-Math.sin(pitch),-Math.cos(yaw)*Math.cos(pitch)).normalize();
+ if(direction.dot(delta.normalize())<.88)return;
+ if(targetPeerId===peer.id){applyLocalDamage(damage);networkBroadcast({type:'state',state:localPlayerState()});}
+ else safePeerSend(connections.get(targetPeerId),{type:'damage',amount:damage,from:attackerPeerId});
+ if(attackerPeerId===peer.id)say(`Hit friend for ${damage} damage`);
+}
+function requestPlayerAttack(targetPeerId,weaponIndex){
+ if(networkRole==='host'){handlePlayerAttack(peer?.id,targetPeerId,weaponIndex);}
+ else if(networkRole==='client'&&hostConnection?.open){safePeerSend(hostConnection,{type:'attack',targetPeerId,weaponIndex});say('Attack sent');}
 }
 function safePeerSend(conn,message){if(conn?.open){try{conn.send(message);}catch(err){console.warn(err);}}}
 function sendSnapshot(conn){safePeerSend(conn,{type:'snapshot',changes:Array.from(worldChanges.entries())});}
@@ -330,15 +294,19 @@ function makeRemoteHeldProp(index=0){
 }
 function createRemotePlayer(peerId,state){
  const group=new THREE.Group();
+ const hitMeshes=[];
  const color=new THREE.Color().setHSL((Math.abs(hashString(peerId))%360)/360,.62,.48);
  const bodyMat=new THREE.MeshLambertMaterial({color});const trimMat=new THREE.MeshLambertMaterial({color:0x243b4f});const headMat=new THREE.MeshLambertMaterial({color:0xe4b990});
- const body=new THREE.Mesh(new THREE.BoxGeometry(.62,.82,.34),bodyMat);body.position.y=.92;body.castShadow=true;group.add(body);
- const head=new THREE.Mesh(new THREE.BoxGeometry(.42,.42,.42),headMat);head.position.y=1.58;head.castShadow=true;group.add(head);
- for(const side of [-1,1]){const arm=new THREE.Mesh(new THREE.BoxGeometry(.2,.68,.22),bodyMat);arm.position.set(side*.42,.94,0);arm.castShadow=true;group.add(arm);const leg=new THREE.Mesh(new THREE.BoxGeometry(.24,.55,.27),trimMat);leg.position.set(side*.17,.27,0);leg.castShadow=true;group.add(leg);}
+ const addHitPart=(geometry,material,position)=>{
+   const mesh=new THREE.Mesh(geometry,material);mesh.position.set(...position);mesh.castShadow=true;mesh.userData.remotePeerId=peerId;group.add(mesh);hitMeshes.push(mesh);remotePlayerHitMeshes.push(mesh);return mesh;
+ };
+ addHitPart(new THREE.BoxGeometry(.62,.82,.34),bodyMat,[0,.92,0]);
+ addHitPart(new THREE.BoxGeometry(.42,.42,.42),headMat,[0,1.58,0]);
+ for(const side of [-1,1]){addHitPart(new THREE.BoxGeometry(.2,.68,.22),bodyMat,[side*.42,.94,0]);addHitPart(new THREE.BoxGeometry(.24,.55,.27),trimMat,[side*.17,.27,0]);}
  const label=createNameSprite(state?.name||'FRIEND');label.position.y=2.25;group.add(label);
  const heldIndex=Number.isInteger(state?.held)&&state.held>=0&&state.held<weapons.length?state.held:0;
  const heldProp=makeRemoteHeldProp(heldIndex);group.add(heldProp);
- scene.add(group);const record={group,target:new THREE.Vector3(),yaw:0,state:state||{},heldIndex,heldProp};remotePlayers.set(peerId,record);return record;
+ scene.add(group);const record={group,target:new THREE.Vector3(),yaw:0,state:state||{},heldIndex,heldProp,hitMeshes};remotePlayers.set(peerId,record);return record;
 }
 function hashString(s){let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return h;}
 function updateRemotePlayer(peerId,state){
@@ -351,14 +319,17 @@ function updateRemotePlayer(peerId,state){
  const heldIndex=Number.isInteger(state.held)&&state.held>=0&&state.held<weapons.length?state.held:0;
  if(heldIndex!==remote.heldIndex){remote.group.remove(remote.heldProp);remote.heldProp.traverse(obj=>{if(obj.geometry)obj.geometry.dispose();if(obj.material)obj.material.dispose();});remote.heldProp=makeRemoteHeldProp(heldIndex);remote.group.add(remote.heldProp);remote.heldIndex=heldIndex;}
 }
-function removeRemotePlayer(peerId){const remote=remotePlayers.get(peerId);if(remote){scene.remove(remote.group);remote.group.traverse(obj=>{if(obj.material?.map)obj.material.map.dispose();});remotePlayers.delete(peerId);}}
-function refreshNetworkUi(){updateRoomStatus();if(networkRole==='host')setNetworkStatus(`Room is ready. Send code ${roomCode} to your friend. Connected players: ${1+connections.size}.`);else if(networkRole==='client')setNetworkStatus(hostConnection?.open?`Connected to room ${roomCode}. You can enter the world.`:`Connecting to room ${roomCode}…`);}
+function removeRemotePlayer(peerId){const remote=remotePlayers.get(peerId);if(remote){scene.remove(remote.group);for(const mesh of remote.hitMeshes||[]){const i=remotePlayerHitMeshes.indexOf(mesh);if(i>=0)remotePlayerHitMeshes.splice(i,1);}remote.group.traverse(obj=>{if(obj.geometry)obj.geometry.dispose();if(obj.material){if(Array.isArray(obj.material))obj.material.forEach(m=>m.dispose());else obj.material.dispose();}});remotePlayers.delete(peerId);updateRoomStatus();}}
+function refreshNetworkUi(){updateRoomStatus();if(networkRole==='host')setNetworkStatus(`Room is ready for up to ${MAX_PLAYERS} players. Send code ${roomCode} to four friends. Connected players: ${1+connections.size}/${MAX_PLAYERS}.`);else if(networkRole==='client')setNetworkStatus(hostConnection?.open?`Connected to room ${roomCode}. You can enter the world.`:`Connecting to room ${roomCode}…`);}
 function registerConnection(conn){
  conn.on('open',()=>{
    connections.set(conn.peer,conn);
    if(networkRole==='host'){
      sendSnapshot(conn);
+     safePeerSend(conn,{type:'spawn',slot:Math.min(MAX_PLAYERS-1,connections.size)});
      safePeerSend(conn,{type:'dayState',elapsed:worldTime});
+     safePeerSend(conn,{type:'state',state:localPlayerState()});
+     sendMobSnapshot(conn);
      for(const [id,remote] of remotePlayers) safePeerSend(conn,{type:'state',state:remote.state});
    }else if(networkRole==='client'){
      hostConnection=conn;startButton.disabled=false;startButton.textContent='ENTER WORLD';
@@ -369,8 +340,13 @@ function registerConnection(conn){
  });
  conn.on('data',message=>{
    if(!message||typeof message!=='object')return;
-   if(message.type==='room-full'){setNetworkStatus('This room already has a player. Ask the host to create a new room.');startButton.disabled=true;return;}
-   if(message.type==='dayState'&&networkRole==='client'&&Number.isFinite(message.elapsed)&&message.elapsed>=0&&message.elapsed<864000){worldTime=message.elapsed;updateDayCycle();}
+   if(message.type==='room-full'){setNetworkStatus('This room is full. A room supports 5 players total.');startButton.disabled=true;return;}
+   if(message.type==='spawn'&&networkRole==='client'&&Number.isInteger(message.slot)&&message.slot>=1&&message.slot<MAX_PLAYERS){const spawnOffsets=[0,-3,3,-6,6];localSpawnX=spawnOffsets[message.slot]??0;player.pos.set(localSpawnX,2.3,6);camera.position.copy(player.pos);}
+   else if(message.type==='damage'&&networkRole==='client'&&Number.isFinite(message.amount)){applyLocalDamage(Math.max(0,Math.min(50,message.amount)),typeof message.source==='string'?message.source:'friend');}
+   else if(message.type==='attack'&&networkRole==='host'){handlePlayerAttack(conn.peer,message.targetPeerId,message.weaponIndex);}
+   else if(message.type==='mobHit'&&networkRole==='host'&&typeof message.mobId==='string'){handleMobHit(conn.peer,message.mobId,message.weaponIndex);}
+   else if(message.type==='mobSnapshot'&&networkRole==='client'&&Array.isArray(message.mobs)&&message.mobs.length<=16){syncMobSnapshot(message.mobs);}
+   else if(message.type==='dayState'&&networkRole==='client'&&Number.isFinite(message.elapsed)&&message.elapsed>=0&&message.elapsed<864000){worldTime=message.elapsed;updateDayCycle();}
    else if(message.type==='snapshot'&&Array.isArray(message.changes)&&message.changes.length<=MAX_SNAPSHOT_CHANGES){
      for(const entry of message.changes){if(Array.isArray(entry)&&entry.length===2)applyRemoteBlockChange(entry[0],entry[1]);}
      say('World changes synchronized');
@@ -380,12 +356,15 @@ function registerConnection(conn){
    }else if(message.type==='state'&&message.state){
      updateRemotePlayer(conn.peer,message.state);
      if(networkRole==='host')networkBroadcast(message,conn.peer);
+   }else if(message.type==='leave'&&typeof message.peerId==='string'){
+     removeRemotePlayer(message.peerId);
    }else if(message.type==='goodbye'){
      removeRemotePlayer(conn.peer);
    }
  });
  conn.on('close',()=>{
    connections.delete(conn.peer);removeRemotePlayer(conn.peer);
+   if(networkRole==='host')networkBroadcast({type:'leave',peerId:conn.peer});
    if(networkRole==='client'&&hostConnection===conn){hostConnection=null;startButton.disabled=true;setNetworkStatus('Disconnected from host. Return to the menu and reconnect.');}
    refreshNetworkUi();
  });
@@ -405,8 +384,8 @@ document.querySelector('#hostRoom').addEventListener('click',()=>{
  peer=new window.Peer('bf'+code.toLowerCase());
  peer.on('open',()=>{roomInfo.hidden=false;roomCodeLabel.textContent=roomCode;startButton.disabled=false;startButton.textContent='ENTER WORLD';refreshNetworkUi();});
  peer.on('connection',conn=>{
-   // This prototype is designed for the host and one friend only.
-   if(networkRole!=='host' || connections.size + pendingHostConnections >= 1){
+   // Host plus two guests: at most three players in a room.
+   if(networkRole!=='host' || connections.size + pendingHostConnections >= MAX_PLAYERS - 1){
      conn.on('open',()=>{safePeerSend(conn,{type:'room-full'});conn.close();});
      return;
    }
@@ -448,30 +427,179 @@ let lastUse=0;
 renderer.domElement.addEventListener('mousedown',e=>{if(!locked)return;if(e.button===0)useWeapon();if(e.button===2)placeBlock();});
 function say(msg){const el=document.querySelector('#message');el.textContent=msg;el.style.opacity=1;clearTimeout(say.timer);say.timer=setTimeout(()=>el.style.opacity=0,1400);}
 const raycaster=new THREE.Raycaster();raycaster.far=5;
+const playerRaycaster=new THREE.Raycaster();
+function mobMaterial(color,emissive=0x000000){return new THREE.MeshLambertMaterial({color,emissive,emissiveIntensity:emissive?0.9:0});}
+function disposeMob(mob){
+ if(!mob)return;scene.remove(mob.group);
+ for(const mesh of mob.hitMeshes){const i=mobHitMeshes.indexOf(mesh);if(i>=0)mobHitMeshes.splice(i,1);}
+ mob.group.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){if(Array.isArray(o.material))o.material.forEach(m=>m.dispose());else o.material.dispose();}});
+ mobs.delete(mob.id);
+}
+function createMob(id,type,state){
+ const def=MOB_DEFS[type];if(!def)return null;
+ const group=new THREE.Group(),hitMeshes=[];
+ const part=(size,color,pos,rot=[0,0,0],hit=true,emissive=0)=>{
+  const mesh=new THREE.Mesh(new THREE.BoxGeometry(...size),mobMaterial(color,emissive));mesh.position.set(...pos);mesh.rotation.set(...rot);mesh.castShadow=true;mesh.receiveShadow=true;mesh.userData.mobId=id;group.add(mesh);
+  if(hit){hitMeshes.push(mesh);mobHitMeshes.push(mesh);}return mesh;
+ };
+ if(type==='zombie'){
+  part([.58,.78,.32],0x367c43,[0,.91,0]);part([.48,.48,.46],0x4dab5e,[0,1.57,0]);
+  part([.19,.73,.20],0x367c43,[-.42,.94,0],[0,0,-.12]);part([.19,.73,.20],0x367c43,[.42,.94,0],[0,0,.12]);
+  part([.23,.52,.25],0x344b9a,[-.17,.27,0]);part([.23,.52,.25],0x344b9a,[.17,.27,0]);
+  part([.07,.07,.035],0x171c18,[-.13,1.63,-.235]);part([.07,.07,.035],0x171c18,[.13,1.63,-.235]);
+ }else if(type==='skeleton'){
+  part([.28,.82,.20],0xd7d9c9,[0,.94,0]);part([.43,.44,.39],0xe4e2d4,[0,1.62,0]);
+  part([.11,.74,.12],0xc9ccbf,[-.31,.94,0],[0,0,-.12]);part([.11,.74,.12],0xc9ccbf,[.31,.94,0],[0,0,.12]);
+  part([.13,.52,.14],0xb6b9ae,[-.13,.27,0]);part([.13,.52,.14],0xb6b9ae,[.13,.27,0]);
+  part([.07,.08,.04],0x312c26,[-.12,1.67,-.205]);part([.07,.08,.04],0x312c26,[.12,1.67,-.205]);
+  part([.06,.42,.06],0x6b5137,[.48,.96,.05],[0,0,.35]);part([.35,.05,.05],0x9f875f,[.49,1.13,.05]);
+ }else if(type==='creeper'){
+  part([.62,1.10,.42],0x4fa64b,[0,.82,0]);part([.55,.55,.50],0x59b44f,[0,1.57,-.02]);
+  for(const x of [-.20,.20])for(const z of [-.13,.13])part([.18,.34,.18],0x3b813c,[x,.18,z]);
+  part([.12,.15,.04],0x18271b,[-.12,1.62,-.278]);part([.12,.15,.04],0x18271b,[.12,1.62,-.278]);part([.24,.13,.04],0x18271b,[0,1.40,-.28]);
+  part([.10,.10,.035],0x18271b,[-.08,1.35,-.28]);part([.10,.10,.035],0x18271b,[.08,1.35,-.28]);
+ }else if(type==='spider'){
+  part([.62,.34,.75],0x252936,[0,.34,0]);part([.42,.30,.39],0x313846,[0,.31,-.48]);
+  part([.09,.09,.05],0xe64c4c,[-.13,.37,-.68],[0,0,0],true,0x9b2020);part([.09,.09,.05],0xe64c4c,[.13,.37,-.68],[0,0,0],true,0x9b2020);
+  for(const side of [-1,1])for(const z of [-.48,-.24,0,.24])part([.58,.075,.075],0x171b23,[side*.48,.20,z],[0,side*(z<0?-.45:.45),side*.12]);
+ }else if(type==='enderman'){
+  part([.34,1.08,.28],0x201b2c,[0,1.52,0]);part([.42,.44,.38],0x211c2c,[0,2.34,0]);
+  part([.12,1.14,.13],0x171522,[-.30,1.53,0],[0,0,-.03]);part([.12,1.14,.13],0x171522,[.30,1.53,0],[0,0,.03]);
+  part([.13,.90,.14],0x171522,[-.12,.48,0]);part([.13,.90,.14],0x171522,[.12,.48,0]);
+  part([.10,.055,.035],0xc16aff,[-.12,2.38,-.205],[0,0,0],true,0x8a31d8);part([.10,.055,.035],0xc16aff,[.12,2.38,-.205],[0,0,0],true,0x8a31d8);
+ }
+ const h=def.height;
+ const barBack=new THREE.Mesh(new THREE.BoxGeometry(.82,.07,.035),mobMaterial(0x191d25));barBack.position.set(0,h+.36,0);barBack.userData.noHit=true;group.add(barBack);
+ const barFill=new THREE.Mesh(new THREE.BoxGeometry(.76,.045,.04),mobMaterial(0x53e06b));barFill.position.set(0,h+.36,-.025);barFill.userData.noHit=true;group.add(barFill);
+ const label=createNameSprite(type.toUpperCase());label.position.y=h+.64;label.scale.set(1.5,.36,1);group.add(label);
+ const x=Number.isFinite(state.x)?state.x:0,z=Number.isFinite(state.z)?state.z:0,y=Number.isFinite(state.y)?state.y:heightAt(Math.round(x),Math.round(z))-.5;
+ group.position.set(x,y,z);scene.add(group);
+ const mob={id,type,group,hitMeshes,target:new THREE.Vector3(x,y,z),yaw:Number(state.yaw)||0,health:Number.isFinite(state.health)?state.health:def.health,maxHealth:def.health,attackCooldown:1+Math.random(),fuse:Number(state.fuse)||0,teleportCooldown:5+Math.random()*4,barFill,def};
+ mob.health=Math.max(0,Math.min(mob.maxHealth,mob.health));barFill.scale.x=Math.max(.01,mob.health/mob.maxHealth);barFill.position.x=-.38*(1-mob.health/mob.maxHealth);
+ mobs.set(id,mob);return mob;
+}
+function updateMobHealthBar(mob){const fraction=Math.max(0,Math.min(1,mob.health/mob.maxHealth));mob.barFill.scale.x=Math.max(.001,fraction);mob.barFill.position.x=-.38*(1-fraction);}
+function ensureMob(id,type,state){
+ if(!MOB_TYPES.includes(type)||typeof id!=='string'||id.length>80)return null;
+ let mob=mobs.get(id);if(!mob)mob=createMob(id,type,state||{});if(!mob)return null;
+ if(state&&Number.isFinite(state.x)&&Number.isFinite(state.y)&&Number.isFinite(state.z))mob.target.set(state.x,state.y,state.z);
+ if(state&&Number.isFinite(state.health)){mob.health=Math.max(0,Math.min(mob.maxHealth,state.health));updateMobHealthBar(mob);}
+ if(state&&Number.isFinite(state.yaw))mob.yaw=state.yaw;
+ if(state&&Number.isFinite(state.fuse))mob.fuse=Math.max(0,Math.min(2,state.fuse));
+ return mob;
+}
+function serializeMobs(){return [...mobs.values()].filter(m=>m.health>0).map(m=>({id:m.id,type:m.type,x:m.group.position.x,y:m.group.position.y,z:m.group.position.z,yaw:m.yaw,health:m.health,fuse:m.fuse}));}
+function sendMobSnapshot(conn){safePeerSend(conn,{type:'mobSnapshot',mobs:serializeMobs()});}
+function syncMobSnapshot(list){
+ const seen=new Set();
+ for(const state of list){
+  if(!state||typeof state.id!=='string'||!MOB_TYPES.includes(state.type)||![state.x,state.y,state.z,state.health].every(Number.isFinite)||Math.abs(state.x)>64||Math.abs(state.z)>64||state.y< -10||state.y>50)continue;
+  seen.add(state.id);ensureMob(state.id,state.type,state);
+ }
+ for(const [id,mob] of [...mobs])if(!seen.has(id))disposeMob(mob);
+}
+function mobTargetList(){
+ const out=[];
+ if(networkRole==='solo')out.push({id:'local',x:player.pos.x,z:player.pos.z,local:true});
+ else if(networkRole==='host')out.push({id:peer?.id||'host',x:player.pos.x,z:player.pos.z,local:true});
+ if(networkRole==='host')for(const [id,remote] of remotePlayers){const p=remote.state?.pos;if(p&&Number.isFinite(p.x)&&Number.isFinite(p.z))out.push({id,x:p.x,z:p.z,local:false});}
+ return out;
+}
+function closestMobTarget(mob){const targets=mobTargetList();let best=null,bestDistance=Infinity;for(const t of targets){const d=Math.hypot(t.x-mob.group.position.x,t.z-mob.group.position.z);if(d<bestDistance){best=t;bestDistance=d;}}return best?{...best,distance:bestDistance}:null;}
+function applyMobDamageToPlayer(target,amount,mobType){
+ if(target.local){applyLocalDamage(amount,mobType);if(networkRole==='host')networkBroadcast({type:'state',state:localPlayerState()});}
+ else if(networkRole==='host')safePeerSend(connections.get(target.id),{type:'damage',amount,source:mobType});
+}
+function showMobAttackLine(from,to,color=0xd8d6cc){const geo=new THREE.BufferGeometry().setFromPoints([from,to]);const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color}));scene.add(line);setTimeout(()=>{scene.remove(line);geo.dispose();line.material.dispose();},180);}
+function updateMobs(dt){
+ if(networkRole==='client')return;
+ mobSpawnTimer+=dt;const limit=isNight?12:7,interval=isNight?4.5:8.5;
+ if(mobs.size<limit&&mobSpawnTimer>=interval){mobSpawnTimer=0;spawnMob(MOB_TYPES[mobTypeIndex%MOB_TYPES.length]);mobTypeIndex++;}
+ for(const mob of [...mobs.values()]){
+  const target=closestMobTarget(mob);if(!target)continue;
+  const pos=mob.group.position;let dx=target.x-pos.x,dz=target.z-pos.z;let distance=Math.hypot(dx,dz);
+  mob.attackCooldown=Math.max(0,mob.attackCooldown-dt);mob.teleportCooldown=Math.max(0,mob.teleportCooldown-dt);
+  if(mob.type==='creeper'&&distance<3.3){mob.fuse+=dt;mob.group.scale.setScalar(1+Math.sin(mob.fuse*18)*.055);if(mob.fuse>=1.7){
+    const center=new THREE.Vector3(pos.x,pos.y+.5,pos.z);for(const t of mobTargetList()){const d=Math.hypot(t.x-pos.x,t.z-pos.z);if(d<4.4)applyMobDamageToPlayer(t,Math.max(6,Math.round(34*(1-d/5))),mob.type);}
+    const flash=new THREE.Mesh(new THREE.SphereGeometry(2.8,8,6),new THREE.MeshBasicMaterial({color:0xffd36b,transparent:true,opacity:.55,wireframe:true}));flash.position.copy(center);scene.add(flash);setTimeout(()=>{scene.remove(flash);flash.geometry.dispose();flash.material.dispose();},250);disposeMob(mob);continue;
+  }}else if(mob.type==='creeper'){mob.fuse=Math.max(0,mob.fuse-dt*1.5);mob.group.scale.setScalar(1);}
+  if(mob.type==='enderman'&&distance<6&&mob.teleportCooldown<=0){const angle=Math.random()*Math.PI*2;const nx=Math.max(-20,Math.min(20,Math.round(target.x+Math.cos(angle)*6)));const nz=Math.max(-20,Math.min(20,Math.round(target.z+Math.sin(angle)*6)));pos.set(nx,heightAt(nx,nz)-.5,nz);mob.target.copy(pos);mob.teleportCooldown=6+Math.random()*4;continue;}
+  const chaseRange=mob.type==='skeleton'?11:40;
+  if(distance> (mob.type==='spider'?1.3:1.45) && distance<chaseRange){
+   const speed=mob.def.speed*(isNight?1.1:1);if(distance>0){pos.x+=(dx/distance)*speed*dt;pos.z+=(dz/distance)*speed*dt;}
+   const groundY=heightAt(Math.round(pos.x),Math.round(pos.z))-.5;pos.y+=Math.max(-1,Math.min(1,groundY-pos.y))*Math.min(1,dt*6);
+   mob.yaw=Math.atan2(dx,-dz);
+  }
+  if(mob.attackCooldown<=0){
+   if(mob.type==='skeleton'&&distance<12&&distance>2){
+    const from=pos.clone().add(new THREE.Vector3(0,1.25,0));const to=new THREE.Vector3(target.x,1,target.z);showMobAttackLine(from,to,0xe3dfce);applyMobDamageToPlayer(target,7,mob.type);mob.attackCooldown=2.2;
+   }else if(distance<(mob.type==='spider'?1.7:1.65)&&mob.type!=='creeper'){
+    applyMobDamageToPlayer(target,mob.def.damage,mob.type);mob.attackCooldown=mob.type==='enderman'?1.35:1.45;
+   }
+  }
+  mob.target.copy(pos);
+ }
+}
+function spawnMob(type){
+ const targets=mobTargetList();const origin=targets.length?targets[Math.floor(Math.random()*targets.length)]:{x:player.pos.x,z:player.pos.z};
+ const angle=Math.random()*Math.PI*2,radius=9+Math.random()*6;const x=Math.max(-20,Math.min(20,Math.round(origin.x+Math.cos(angle)*radius))),z=Math.max(-20,Math.min(20,Math.round(origin.z+Math.sin(angle)*radius)));
+ const id=`mob-${Date.now().toString(36)}-${++mobCounter}`;const y=heightAt(x,z)-.5;createMob(id,type,{x,y,z,health:MOB_DEFS[type].health});
+ if(networkRole==='host')networkBroadcast({type:'mobSnapshot',mobs:serializeMobs()});
+}
+function targetMob(maxDistance=30){
+ playerRaycaster.far=maxDistance;playerRaycaster.setFromCamera(new THREE.Vector2(0,0),camera);
+ const hit=playerRaycaster.intersectObjects(mobHitMeshes,false)[0];
+ return hit&&hit.object.userData.mobId?{id:hit.object.userData.mobId,hit,mob:mobs.get(hit.object.userData.mobId)}:null;
+}
+function mobDamageForWeapon(index){return [18,25,14,7,45,0][index]||0;}
+function handleMobHit(attackerId,mobId,weaponIndex){
+ if(networkRole!=='host'&&networkRole!=='solo')return;
+ if(networkRole==='host'&&attackerId!==peer?.id&&!connections.has(attackerId))return;
+ if(!Number.isInteger(weaponIndex)||weaponIndex<0||weaponIndex>=weapons.length)return;
+ const mob=mobs.get(mobId);if(!mob||mob.health<=0)return;
+ const now=Date.now(),rateKey=`${attackerId}:${mobId}`,last=lastMobHitAt.get(rateKey)||0;const weapon=weapons[weaponIndex];
+ if(now-last<Math.max(80,(weapon.rate||250)*.75))return;lastMobHitAt.set(rateKey,now);
+ const attacker=attackerId===peer?.id||networkRole==='solo'?{x:player.pos.x,z:player.pos.z}:remotePlayers.get(attackerId)?.state?.pos;
+ if(!attacker||!Number.isFinite(attacker.x)||!Number.isFinite(attacker.z))return;
+ const range=[3.8,30,30,30,4.0,0][weaponIndex];if(!range)return;
+ const d=Math.hypot(attacker.x-mob.group.position.x,attacker.z-mob.group.position.z);if(d>range+1)return;
+ const damage=mobDamageForWeapon(weaponIndex);if(!damage)return;mob.health=Math.max(0,mob.health-damage);updateMobHealthBar(mob);
+ if(mob.health<=0){const type=mob.type;disposeMob(mob);if(attackerId===peer?.id||networkRole==='solo')say(`${type.toUpperCase()} defeated!`);}
+ if(networkRole==='host')networkBroadcast({type:'mobSnapshot',mobs:serializeMobs()});
+}
+function requestMobAttack(mobId,weaponIndex){
+ if(networkRole==='client'){safePeerSend(hostConnection,{type:'mobHit',mobId,weaponIndex});}
+ else handleMobHit(networkRole==='host'?(peer?.id||'host'):'local',mobId,weaponIndex);
+}
 function targetBlock(){raycaster.setFromCamera(new THREE.Vector2(0,0),camera);return raycaster.intersectObjects(blockMeshes,false)[0]||null;}
+function targetRemotePlayer(maxDistance=30){
+ playerRaycaster.far=maxDistance;playerRaycaster.setFromCamera(new THREE.Vector2(0,0),camera);
+ const hit=playerRaycaster.intersectObjects(remotePlayerHitMeshes,false)[0];
+ return hit&&hit.object.userData.remotePeerId?{peerId:hit.object.userData.remotePeerId,hit}:null;
+}
 function useWeapon(){
  const now=performance.now(),w=weapons[selected];if(now-lastUse<(w.rate||250))return;lastUse=now;
  if(w.kind==='mine'){
-   const enemyHit=targetEnemy(3.5);
-   if(enemyHit){damageEnemy(enemyHit.enemy,24);say('Pickaxe strike!');return;}
+   const mob=targetMob(3.5);if(mob){requestMobAttack(mob.id,selected);say(`Hit ${mob.type}`);return;}
+   const foe=targetRemotePlayer(3.5);
+   if(foe){requestPlayerAttack(foe.peerId,selected);say('Pickaxe swing!');return;}
    const hit=targetBlock();
-   if(hit&&hit.object.userData.removable){
-     const minedType=hit.object.userData.type;removeBlock(hit.object);player.blocks++;
-     if(minedType==='ore'){mission.crystals++;say('Crystal ore collected!');}else say('+1 block');
-     updateStats();updateMissionUI();
-   }else say('Aim at a nearby block');
+   if(hit&&hit.object.userData.removable){removeBlock(hit.object);player.blocks++;say('+1 block');updateStats();}
+   else say('Aim at a nearby block');
  }else if(w.kind==='build'){
    placeBlock();
  }else if(w.kind==='melee'){
-   const foe=targetEnemy(3.7);
-   if(foe){damageEnemy(foe.enemy,45);say('Energy saber strike!');}else say('Energy saber activated');
+   const mob=targetMob(3.7);if(mob){requestMobAttack(mob.id,selected);say(`Energy saber hit ${mob.type}`);saberFlash();return;}
+   const foe=targetRemotePlayer(3.7);
+   if(foe){requestPlayerAttack(foe.peerId,selected);say('Energy saber strike!');}else say('Aim at a friend to strike');
    saberFlash();
  }else{
-   if(reloading)return;
-   if(mag<=0){say('Press R to reload');return;}
+   if(reloading)return;if(mag<=0){say('Press R to reload');return;}
    mag--;drawHotbar();shootEffect(w.color);
-   const foe=targetEnemy(30);
-   if(foe){damageEnemy(foe.enemy,w.damage);}
+   const mob=targetMob(30);
+   const foe=mob?null:targetRemotePlayer(30);
+   if(mob)requestMobAttack(mob.id,selected);
+   else if(foe)requestPlayerAttack(foe.peerId,selected);
    else{
      const hit=targetBlock();
      if(hit){const p=hit.point;const spark=new THREE.Mesh(new THREE.BoxGeometry(.14,.14,.14),new THREE.MeshBasicMaterial({color:w.color}));spark.position.copy(p);scene.add(spark);setTimeout(()=>{scene.remove(spark);spark.geometry.dispose();spark.material.dispose();},180);}
@@ -483,7 +611,7 @@ function placeBlock(){
  const n=hit.face.normal.clone();const p=hit.object.position.clone().add(n);
  if(p.distanceTo(player.pos)<1.25){say('Too close to place');return;}
  const before=blocks.size;addBlock(Math.round(p.x),Math.round(p.y),Math.round(p.z),'dirt',true,true);
- if(blocks.size>before){player.blocks--;mission.blocksPlaced++;updateStats();updateMissionUI();say('Block placed');}else say('There is already a block there');
+ if(blocks.size>before){player.blocks--;updateStats();say('Block placed');}else say('There is already a block there');
 }
 function shootEffect(color){
  const dir=new THREE.Vector3();camera.getWorldDirection(dir);
@@ -510,7 +638,7 @@ function collidesAt(pos){
 }
 let tick=0,networkTick=0;
 function sendPlayerState(){
- const state={name:networkRole==='host'?'HOST':'PLAYER',pos:{x:player.pos.x,y:player.pos.y-1.6,z:player.pos.z},yaw:player.yaw,health:player.health,held:selected};
+ const state=localPlayerState();
  if(networkRole==='host')networkBroadcast({type:'state',state});
  else if(networkRole==='client'&&hostConnection?.open)safePeerSend(hostConnection,{type:'state',state});
 }
@@ -528,15 +656,18 @@ function animate(){
    if(player.pos.y<-5){player.pos.set(0,3,6);player.vel.set(0,0,0);}
    tick+=dt;if(tick>8){tick=0;player.hunger=Math.max(0,player.hunger-.3);updateStats();}
    if(networkRole!=='client')worldTime+=dt;
+   if(networkRole!=='client')updateMobs(dt);
    daySyncTick+=dt;
    if(networkRole==='host'&&daySyncTick>=1){daySyncTick=0;networkBroadcast({type:'dayState',elapsed:worldTime});}
+   mobSnapshotTimer+=dt;if(networkRole==='host'&&mobSnapshotTimer>=.3){mobSnapshotTimer=0;networkBroadcast({type:'mobSnapshot',mobs:serializeMobs()});}
    camera.position.copy(player.pos);camera.rotation.order='YXZ';camera.rotation.y=player.yaw;camera.rotation.x=player.pitch;
    networkTick+=dt;if(networkTick>.08){networkTick=0;sendPlayerState();}
  }
  updateDayCycle();
- updateEnemies(dt);
+ const mobCountLabel=document.querySelector('#mobCount');if(mobCountLabel)mobCountLabel.textContent=mobs.size;
  heldItemRoot.position.y=-.37 + ((!paused&&locked&&(keys.KeyW||keys.KeyA||keys.KeyS||keys.KeyD))?Math.sin(clock.elapsedTime*11)*.018:0);
  for(const remote of remotePlayers.values()){remote.group.position.lerp(remote.target,.3);remote.group.rotation.y=remote.yaw;}
+ if(networkRole==='client')for(const mob of mobs.values()){mob.group.position.lerp(mob.target,.25);mob.group.rotation.y=mob.yaw;mob.group.scale.setScalar(mob.type==='creeper'&&mob.fuse>0?1+Math.sin(mob.fuse*18)*.055:1);}
  renderer.render(scene,camera);
 }
 animate();
