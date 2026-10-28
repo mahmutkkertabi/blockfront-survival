@@ -10,11 +10,12 @@
 <div id="overlay">
   <div class="panel">
     <h1>BLOCKFRONT <span>SURVIVAL</span></h1>
-    <p>A blocky first-person survival sandbox</p>
+    <p>A blocky first-person survival game. Reach Day 5, collect 5 crystal ores, place 10 blocks, and defeat 8 night hostiles to win.</p>
     <ul>
       <li><b>W A S D</b> move · <b>Mouse</b> look · <b>Space</b> jump</li>
       <li><b>Left click</b> mine / use equipment · <b>Right click</b> place block</li>
-      <li><b>1–6</b> select equipment · <b>R</b> reload · <b>Esc</b> pause</li>
+      <li><b>1–6 or mouse wheel</b> switch equipment · <b>R</b> reload · <b>Esc</b> pause</li>
+      <li>Watch out: hostile cubes appear at night.</li>
     </ul>
     <div class="lobby">
       <button id="hostRoom">CREATE MULTIPLAYER ROOM</button>
@@ -30,17 +31,25 @@
       <div id="netStatus" role="status">Create a room or enter a friend's code.</div>
     </div>
     <button id="start" disabled>ENTER WORLD</button>
-    <small>Multiplayer is peer-to-peer using the PeerJS Cloud signaling service. Both players must keep the game open; connection may depend on network settings.</small>
+    <small>Multiplayer uses PeerJS peer-to-peer connections. Both players must keep the game open; connection may depend on network settings. Reach Day 5, mine 5 crystal ores, place 10 blocks, and defeat 8 hostiles to complete the survival mission.</small>
   </div>
 </div>
 <div id="hud">
   <div class="topline"><span>BLOCKFRONT</span><span id="status">DAY 1 · SOLO</span></div>
   <div class="stats"><div>❤ <b id="health">100</b></div><div>▰ HUNGER <b id="hunger">100</b></div><div>▦ BLOCKS <b id="blocks">24</b></div></div>
+  <div id="missionPanel" aria-label="Survival mission progress">
+    <div class="mission-title">SURVIVAL MISSION</div>
+    <div id="objectiveDay">Reach Day 5: 1/5</div>
+    <div id="objectiveCrystals">Mine crystal ore: 0/5</div>
+    <div id="objectiveBlocks">Place blocks: 0/10</div>
+    <div id="objectiveEnemies">Defeat hostiles: 0/8</div>
+  </div>
+  <div id="missionBanner" hidden>MISSION COMPLETE — YOU SURVIVED!</div>
   <div id="crosshair">+</div>
   <div id="weaponLabel">1 · MINING PICK</div>
   <div id="message"></div>
   <div id="hotbar"></div>
-  <div class="help">WASD move · Space jump · Left click use · Right click build · 1–6 select · R reload</div>
+  <div class="help">WASD move · Space jump · Left click use · Right click build · 1–6 / mouse wheel switch · R reload</div>
 </div>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script type="module" src="game.js"></script>
