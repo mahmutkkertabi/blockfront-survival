@@ -1,0 +1,27 @@
+BLOCKFRONT SURVIVAL MULTIPLAYER — SECURITY REVIEW
+Date: 2026-10-27
+
+What was checked
+- Inspected all four archive members: index.html, style.css, game.js, README.md.
+- Verified ZIP archive integrity (unzip -t).
+- Parsed game.js with Node.js --check.
+- Parsed index.html with Python's HTML parser.
+- Served the files locally and confirmed HTTP 200 responses for all four members.
+- Ran focused unit checks for block-key/value validation and generated 1,000 room-code samples; all passed the checks used.
+- Searched source for common suspicious patterns including eval, new Function, document.cookie, localStorage/sessionStorage, XMLHttpRequest, sendBeacon, and fetch. None were found.
+
+Changes in this reviewed build
+- Room codes use 10 cryptographically generated characters via Web Crypto instead of 6 Math.random()-based characters.
+- Only one guest can join a room.
+- Incoming block changes are checked for allowed coordinates, canonical keys, block types, and value types.
+- Oversized snapshot arrays are rejected.
+
+Important limitations
+- This is a static/source review, not a professional security audit.
+- No antivirus engine/signature database was available in this environment, so this is NOT an antivirus verdict.
+- The headless browser test could not navigate to the local test server in this environment (ERR_BLOCKED_BY_ADMINISTRATOR), and a real two-device WebRTC multiplayer test was not confirmed.
+- The page loads pinned Three.js and PeerJS scripts from external HTTPS CDNs. The page relies on those third-party packages and their distribution infrastructure.
+- Peer-to-peer rooms are not a full authentication/anti-cheat system. Share the room code only with the intended friend. Do not enter passwords or personal information into the game.
+
+Recommended next step on Windows
+Right-click the downloaded ZIP in File Explorer and choose the Microsoft Defender scan option (wording varies by Windows version). Keep Microsoft Defender definitions updated. A clean scan reduces risk but does not prove a file is completely safe.

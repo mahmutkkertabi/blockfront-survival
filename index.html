@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockfront Survival — Multiplayer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="overlay">
+  <div class="panel">
+    <h1>BLOCKFRONT <span>SURVIVAL</span></h1>
+    <p>A blocky first-person survival sandbox</p>
+    <ul>
+      <li><b>W A S D</b> move · <b>Mouse</b> look · <b>Space</b> jump</li>
+      <li><b>Left click</b> mine / use equipment · <b>Right click</b> place block</li>
+      <li><b>1–6</b> select equipment · <b>R</b> reload · <b>Esc</b> pause</li>
+    </ul>
+    <div class="lobby">
+      <button id="hostRoom">CREATE MULTIPLAYER ROOM</button>
+      <div class="join-row">
+        <input id="joinCode" maxlength="10" autocomplete="off" spellcheck="false" placeholder="10-CHAR ROOM CODE" aria-label="Room code">
+        <button id="joinRoom">JOIN</button>
+      </div>
+      <button id="solo" class="secondary">PLAY SOLO</button>
+      <div id="roomInfo" class="room-info" hidden>
+        <div class="room-line">ROOM CODE <strong id="roomCode">------</strong></div>
+        <button id="copyRoom" class="copy-button">COPY CODE</button>
+      </div>
+      <div id="netStatus" role="status">Create a room or enter a friend's code.</div>
+    </div>
+    <button id="start" disabled>ENTER WORLD</button>
+    <small>Multiplayer is peer-to-peer using the PeerJS Cloud signaling service. Both players must keep the game open; connection may depend on network settings.</small>
+  </div>
+</div>
+<div id="hud">
+  <div class="topline"><span>BLOCKFRONT</span><span id="status">DAY 1 · SOLO</span></div>
+  <div class="stats"><div>❤ <b id="health">100</b></div><div>▰ HUNGER <b id="hunger">100</b></div><div>▦ BLOCKS <b id="blocks">24</b></div></div>
+  <div id="crosshair">+</div>
+  <div id="weaponLabel">1 · MINING PICK</div>
+  <div id="message"></div>
+  <div id="hotbar"></div>
+  <div class="help">WASD move · Space jump · Left click use · Right click build · 1–6 select · R reload</div>
+</div>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="module" src="game.js"></script>
+</body>
+</html>
